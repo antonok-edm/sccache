@@ -5,9 +5,10 @@
 use chrono::{Duration, UTC, DateTime};
 use futures::{Future, Async, IntoFuture, Stream};
 use futures::future::{self, Shared};
-use hyper::{self, Client, Method};
-use hyper::client::{HttpConnector, Request};
-use hyper::header::Connection;
+use hyper::{self, Body, Client, Method, Request};
+use hyper::header::{self, HeaderValue};
+use hyper::client::HttpConnector;
+use hyper::client::conn::Connection;
 use regex::Regex;
 use serde_json::{Value, from_str};
 #[allow(unused_imports, deprecated)]
@@ -280,7 +281,7 @@ pub struct IamProvider {
 impl IamProvider {
     pub fn new(handle: &Handle) -> IamProvider {
         IamProvider {
-            client: Client::new(handle),
+            client: Client::new(),
             handle: handle.clone(),
         }
     }
@@ -288,10 +289,10 @@ impl IamProvider {
     fn iam_role(&self) -> SFuture<String> {
         // First get the IAM role
         let address = "http://169.254.169.254/latest/meta-data/iam/security-credentials/";
-        let mut req = Request::new(Method::Get, address.parse().unwrap());
-        req.headers_mut().set(Connection::close());
+        let mut req = Request::get(address).body(Body::empty()).unwrap();
+        req.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("close"));
         let response = self.client.request(req).and_then(|response| {
-            response.body().fold(Vec::new(), |mut body, chunk| {
+            response.into_body().fold(Vec::new(), |mut body, chunk| {
                 body.extend_from_slice(&chunk);
                 Ok::<_, hyper::Error>(body)
             })
@@ -318,21 +319,18 @@ impl ProvideAwsCredentials for IamProvider {
             Ok(url) => f_ok(url),
             Err(_) => self.iam_role(),
         };
-        let url = url.and_then(|url| {
-            url.parse().chain_err(|| format!("failed to parse `{}` as url", url))
-        });
 
         let client = self.client.clone();
         let response = url.and_then(move |address| {
             debug!("Attempting to fetch credentials from {}", address);
-            let mut req = Request::new(Method::Get, address);
-            req.headers_mut().set(Connection::close());
+            let mut req = Request::get(address).body(Body::empty()).unwrap();
+            req.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("close"));
             client.request(req).chain_err(|| {
                 "failed to send http request"
             })
         });
         let body = response.and_then(|response| {
-            response.body().fold(Vec::new(), |mut body, chunk| {
+            response.into_body().fold(Vec::new(), |mut body, chunk| {
                 body.extend_from_slice(&chunk);
                 Ok::<_, hyper::Error>(body)
             }).chain_err(|| {
